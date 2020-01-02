@@ -20,11 +20,18 @@ class MUNIT_Trainer(nn.Module):
         self.dis_b = MsImageDis(hyperparameters['input_dim_b'], hyperparameters['dis'])  # discriminator for domain b
         self.instancenorm = nn.InstanceNorm2d(512, affine=False)
         self.style_dim = hyperparameters['gen']['style_dim']
+        '''
+            input_dim_a和input_dim_b是输入图像的维度，RGB图就是3
+            gen和dis是在yaml中定义的与架构相关的配置
+        '''
 
         # fix the noise used in sampling
         display_size = int(hyperparameters['display_size'])
         self.s_a = torch.randn(display_size, self.style_dim, 1, 1).cuda()
         self.s_b = torch.randn(display_size, self.style_dim, 1, 1).cuda()
+        '''
+            为每幅显示的图像（总共16幅）配置随机的风格（维度为8）
+        '''
 
         # Setup the optimizers
         beta1 = hyperparameters['beta1']
@@ -37,11 +44,22 @@ class MUNIT_Trainer(nn.Module):
                                         lr=lr, betas=(beta1, beta2), weight_decay=hyperparameters['weight_decay'])
         self.dis_scheduler = get_scheduler(self.dis_opt, hyperparameters)
         self.gen_scheduler = get_scheduler(self.gen_opt, hyperparameters)
+        '''
+            这种简洁的写法值得学习：先将parameter()的list并起来，然后[p for p in params if p.requires_grad]
+            这里分别为判别器参数、生成器参数各自建立一个优化器
+            优化器采用Adam，算法参数为0.5和0.999
+            优化器中可同时配置权重衰减，这里是1e-4
+            学习率调节器默认配置为每100000步减小为0.5
+        '''
+
 
         # Network weight initialization
         self.apply(weights_init(hyperparameters['init']))
         self.dis_a.apply(weights_init('gaussian'))
         self.dis_b.apply(weights_init('gaussian'))
+        '''
+            注：这个apply函数递归地对每个子模块应用某种函数
+        '''
 
         # Load VGG model if needed
         if 'vgg_w' in hyperparameters.keys() and hyperparameters['vgg_w'] > 0:
@@ -49,10 +67,12 @@ class MUNIT_Trainer(nn.Module):
             self.vgg.eval()
             for param in self.vgg.parameters():
                 param.requires_grad = False
+        '''默认配置中，没有使用这个vgg网络'''
 
     def recon_criterion(self, input, target):
         return torch.mean(torch.abs(input - target))
 
+    #   注，只有在forward内部，是evaluation模式，具体这个方法在哪里用到了，我还不太清楚。
     def forward(self, x_a, x_b):
         self.eval()
         s_a = Variable(self.s_a)
@@ -66,14 +86,14 @@ class MUNIT_Trainer(nn.Module):
 
     def gen_update(self, x_a, x_b, hyperparameters):
         self.gen_opt.zero_grad()
-        s_a = Variable(torch.randn(x_a.size(0), self.style_dim, 1, 1).cuda())
+        s_a = Variable(torch.randn(x_a.size(0), self.style_dim, 1, 1).cuda())   #   两个随机的风格码
         s_b = Variable(torch.randn(x_b.size(0), self.style_dim, 1, 1).cuda())
         # encode
-        c_a, s_a_prime = self.gen_a.encode(x_a)
-        c_b, s_b_prime = self.gen_b.encode(x_b)
+        c_a, s_a_prime = self.gen_a.encode(x_a) #   prime表示是由真图解码来的风格码
+        c_b, s_b_prime = self.gen_b.encode(x_b) #   c码为(1,256,64,64);s码为(1,8,1,1)
         # decode (within domain)
-        x_a_recon = self.gen_a.decode(c_a, s_a_prime)
-        x_b_recon = self.gen_b.decode(c_b, s_b_prime)
+        x_a_recon = self.gen_a.decode(c_a, s_a_prime)   #   (a)用内容码和风格码还原原图
+        x_b_recon = self.gen_b.decode(c_b, s_b_prime)   #   (b)
         # decode (cross domain)
         x_ba = self.gen_a.decode(c_b, s_a)
         x_ab = self.gen_b.decode(c_a, s_b)
@@ -85,20 +105,20 @@ class MUNIT_Trainer(nn.Module):
         x_bab = self.gen_b.decode(c_b_recon, s_b_prime) if hyperparameters['recon_x_cyc_w'] > 0 else None
 
         # reconstruction loss
-        self.loss_gen_recon_x_a = self.recon_criterion(x_a_recon, x_a)
-        self.loss_gen_recon_x_b = self.recon_criterion(x_b_recon, x_b)
-        self.loss_gen_recon_s_a = self.recon_criterion(s_a_recon, s_a)
-        self.loss_gen_recon_s_b = self.recon_criterion(s_b_recon, s_b)
-        self.loss_gen_recon_c_a = self.recon_criterion(c_a_recon, c_a)
-        self.loss_gen_recon_c_b = self.recon_criterion(c_b_recon, c_b)
-        self.loss_gen_cycrecon_x_a = self.recon_criterion(x_aba, x_a) if hyperparameters['recon_x_cyc_w'] > 0 else 0
-        self.loss_gen_cycrecon_x_b = self.recon_criterion(x_bab, x_b) if hyperparameters['recon_x_cyc_w'] > 0 else 0
+        self.loss_gen_recon_x_a = self.recon_criterion(x_a_recon, x_a)  #   (a)
+        self.loss_gen_recon_x_b = self.recon_criterion(x_b_recon, x_b)  #   (b)
+        self.loss_gen_recon_s_a = self.recon_criterion(s_a_recon, s_a)  #   (c)
+        self.loss_gen_recon_s_b = self.recon_criterion(s_b_recon, s_b)  #   (d)
+        self.loss_gen_recon_c_a = self.recon_criterion(c_a_recon, c_a)  #   (e)
+        self.loss_gen_recon_c_b = self.recon_criterion(c_b_recon, c_b)  #   (f)
+        self.loss_gen_cycrecon_x_a = self.recon_criterion(x_aba, x_a) if hyperparameters['recon_x_cyc_w'] > 0 else 0    #   (g)
+        self.loss_gen_cycrecon_x_b = self.recon_criterion(x_bab, x_b) if hyperparameters['recon_x_cyc_w'] > 0 else 0    #   (h)
         # GAN loss
-        self.loss_gen_adv_a = self.dis_a.calc_gen_loss(x_ba)
-        self.loss_gen_adv_b = self.dis_b.calc_gen_loss(x_ab)
+        self.loss_gen_adv_a = self.dis_a.calc_gen_loss(x_ba)            #   (i)
+        self.loss_gen_adv_b = self.dis_b.calc_gen_loss(x_ab)            #   (j)
         # domain-invariant perceptual loss
-        self.loss_gen_vgg_a = self.compute_vgg_loss(self.vgg, x_ba, x_b) if hyperparameters['vgg_w'] > 0 else 0
-        self.loss_gen_vgg_b = self.compute_vgg_loss(self.vgg, x_ab, x_a) if hyperparameters['vgg_w'] > 0 else 0
+        self.loss_gen_vgg_a = self.compute_vgg_loss(self.vgg, x_ba, x_b) if hyperparameters['vgg_w'] > 0 else 0         #   (k)
+        self.loss_gen_vgg_b = self.compute_vgg_loss(self.vgg, x_ab, x_a) if hyperparameters['vgg_w'] > 0 else 0         #   (l)
         # total loss
         self.loss_gen_total = hyperparameters['gan_w'] * self.loss_gen_adv_a + \
                               hyperparameters['gan_w'] * self.loss_gen_adv_b + \
@@ -122,20 +142,21 @@ class MUNIT_Trainer(nn.Module):
         target_fea = vgg(target_vgg)
         return torch.mean((self.instancenorm(img_fea) - self.instancenorm(target_fea)) ** 2)
 
+    #   送进去两张图片（batch），交换他们的风格
     def sample(self, x_a, x_b):
         self.eval()
-        s_a1 = Variable(self.s_a)
+        s_a1 = Variable(self.s_a)                                               #   这个是固定的某种风格
         s_b1 = Variable(self.s_b)
-        s_a2 = Variable(torch.randn(x_a.size(0), self.style_dim, 1, 1).cuda())
+        s_a2 = Variable(torch.randn(x_a.size(0), self.style_dim, 1, 1).cuda())  #   这是即时生成的随机风格
         s_b2 = Variable(torch.randn(x_b.size(0), self.style_dim, 1, 1).cuda())
         x_a_recon, x_b_recon, x_ba1, x_ba2, x_ab1, x_ab2 = [], [], [], [], [], []
         for i in range(x_a.size(0)):
-            c_a, s_a_fake = self.gen_a.encode(x_a[i].unsqueeze(0))
+            c_a, s_a_fake = self.gen_a.encode(x_a[i].unsqueeze(0))              #   这是把送入的图片进行编码
             c_b, s_b_fake = self.gen_b.encode(x_b[i].unsqueeze(0))
-            x_a_recon.append(self.gen_a.decode(c_a, s_a_fake))
+            x_a_recon.append(self.gen_a.decode(c_a, s_a_fake))                  #   这是对送入的图像进行重建
             x_b_recon.append(self.gen_b.decode(c_b, s_b_fake))
-            x_ba1.append(self.gen_a.decode(c_b, s_a1[i].unsqueeze(0)))
-            x_ba2.append(self.gen_a.decode(c_b, s_a2[i].unsqueeze(0)))
+            x_ba1.append(self.gen_a.decode(c_b, s_a1[i].unsqueeze(0)))          #   这是把固定的风格施加在b的内容上，产生a风格的图片
+            x_ba2.append(self.gen_a.decode(c_b, s_a2[i].unsqueeze(0)))          #   这是把随机风格施加在b的内容上，产生a风格的图片
             x_ab1.append(self.gen_b.decode(c_a, s_b1[i].unsqueeze(0)))
             x_ab2.append(self.gen_b.decode(c_a, s_b2[i].unsqueeze(0)))
         x_a_recon, x_b_recon = torch.cat(x_a_recon), torch.cat(x_b_recon)
@@ -146,10 +167,10 @@ class MUNIT_Trainer(nn.Module):
 
     def dis_update(self, x_a, x_b, hyperparameters):
         self.dis_opt.zero_grad()
-        s_a = Variable(torch.randn(x_a.size(0), self.style_dim, 1, 1).cuda())
+        s_a = Variable(torch.randn(x_a.size(0), self.style_dim, 1, 1).cuda())   #   生成图片的随机风格码 (1,8,1,1)
         s_b = Variable(torch.randn(x_b.size(0), self.style_dim, 1, 1).cuda())
         # encode
-        c_a, _ = self.gen_a.encode(x_a)
+        c_a, _ = self.gen_a.encode(x_a) #   将图像利用编码器
         c_b, _ = self.gen_b.encode(x_b)
         # decode (cross domain)
         x_ba = self.gen_a.decode(c_b, s_a)

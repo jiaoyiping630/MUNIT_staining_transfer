@@ -258,6 +258,9 @@ def vgg_preprocess(batch):
     return batch
 
 
+'''
+    注：这是学习率调节器，每隔指定步数将其乘以gamma
+'''
 def get_scheduler(optimizer, hyperparameters, iterations=-1):
     if 'lr_policy' not in hyperparameters or hyperparameters['lr_policy'] == 'constant':
         scheduler = None # constant scheduler

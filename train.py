@@ -11,14 +11,18 @@ def main():
     from trainer import MUNIT_Trainer, UNIT_Trainer
     import torch.backends.cudnn as cudnn
     import torch
-    try:
-        from itertools import izip as zip
-    except ImportError:  # will be 3.x series
-        pass
+
+    # try:
+    #     from itertools import izip as zip
+    # except ImportError:  # will be 3.x series
+    #     pass
+
     import os
     import sys
     import tensorboardX
     import shutil
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(0)
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='configs/edges2handbags_folder.yaml',
@@ -29,6 +33,12 @@ def main():
     opts = parser.parse_args()
 
     cudnn.benchmark = True
+    '''
+    Note: https://www.pytorchtutorial.com/when-should-we-set-cudnn-benchmark-to-true/
+        大部分情况下，设置这个 flag 可以让内置的 cuDNN 的 auto-tuner 自动寻找最适合当前配置的高效算法，来达到优化运行效率的问题
+        1.  如果网络的输入数据维度或类型上变化不大，设置  torch.backends.cudnn.benchmark = true  可以增加运行效率；
+        2.  如果网络的输入数据在每次 iteration 都变化的话，会导致 cnDNN 每次都会去寻找一遍最优配置，这样反而会降低运行效率。
+    '''
 
     # Load experiment setting
     config = get_config(opts.config)

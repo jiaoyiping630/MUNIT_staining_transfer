@@ -6,10 +6,12 @@ from torch import nn
 from torch.autograd import Variable
 import torch
 import torch.nn.functional as F
+
 try:
     from itertools import izip as zip
-except ImportError: # will be 3.x series
+except ImportError:  # will be 3.x series
     pass
+
 
 ##################################################################################
 # Discriminator
@@ -29,20 +31,42 @@ class MsImageDis(nn.Module):
         self.input_dim = input_dim
         self.downsample = nn.AvgPool2d(3, stride=2, padding=[1, 1], count_include_pad=False)
         self.cnns = nn.ModuleList()
+        #   为每个尺度构建不同的判别器，这些判别器是互相独立的，而结构却是一样的，因此，判别器的输出尺寸是不一样的
         for _ in range(self.num_scales):
             self.cnns.append(self._make_net())
 
+    #   这是由若干个卷积块堆叠而成的
+    #   每个卷积块，就是conv+norm+activation一套
     def _make_net(self):
         dim = self.dim
         cnn_x = []
-        cnn_x += [Conv2dBlock(self.input_dim, dim, 4, 2, 1, norm='none', activation=self.activ, pad_type=self.pad_type)]
+        cnn_x += [Conv2dBlock(input_dim=self.input_dim,
+                              output_dim=dim,
+                              kernel_size=4,
+                              stride=2,
+                              padding=1,
+                              norm='none',
+                              activation=self.activ,
+                              pad_type=self.pad_type)]
         for i in range(self.n_layer - 1):
-            cnn_x += [Conv2dBlock(dim, dim * 2, 4, 2, 1, norm=self.norm, activation=self.activ, pad_type=self.pad_type)]
+            cnn_x += [Conv2dBlock(input_dim=dim,
+                                  output_dim=dim * 2,
+                                  kernel_size=4,
+                                  stride=2,
+                                  padding=1,
+                                  norm=self.norm,
+                                  activation=self.activ,
+                                  pad_type=self.pad_type)]
             dim *= 2
-        cnn_x += [nn.Conv2d(dim, 1, 1, 1, 0)]
+        cnn_x += [nn.Conv2d(in_channels=dim,
+                            out_channels=1,
+                            kernel_size=1,
+                            stride=1,
+                            padding=0)]
         cnn_x = nn.Sequential(*cnn_x)
         return cnn_x
 
+    #   前向传播时，会输出每个尺度下的判别器的输出
     def forward(self, x):
         outputs = []
         for model in self.cnns:
@@ -56,9 +80,17 @@ class MsImageDis(nn.Module):
         outs1 = self.forward(input_real)
         loss = 0
 
+        '''
+            从discriminator出来的是多分辨率的输出
+            按照256的输入尺寸来算，则是一个[(1,1,16,16),(1,1,8,8),(1,1,4,4)]的系列
+            对于判别器而言，它的目标是看到假图input_fake输出0，看到真图input_real输出1
+            
+            网络可以为生成器配置不同的损失，当为lsgan时，直接计算平方误差，当为nsgan时，用的是交叉熵
+        '''
+
         for it, (out0, out1) in enumerate(zip(outs0, outs1)):
             if self.gan_type == 'lsgan':
-                loss += torch.mean((out0 - 0)**2) + torch.mean((out1 - 1)**2)
+                loss += torch.mean((out0 - 0) ** 2) + torch.mean((out1 - 1) ** 2)
             elif self.gan_type == 'nsgan':
                 all0 = Variable(torch.zeros_like(out0.data).cuda(), requires_grad=False)
                 all1 = Variable(torch.ones_like(out1.data).cuda(), requires_grad=False)
@@ -74,13 +106,14 @@ class MsImageDis(nn.Module):
         loss = 0
         for it, (out0) in enumerate(outs0):
             if self.gan_type == 'lsgan':
-                loss += torch.mean((out0 - 1)**2) # LSGAN
+                loss += torch.mean((out0 - 1) ** 2)  # LSGAN
             elif self.gan_type == 'nsgan':
                 all1 = Variable(torch.ones_like(out0.data).cuda(), requires_grad=False)
                 loss += torch.mean(F.binary_cross_entropy(F.sigmoid(out0), all1))
             else:
                 assert 0, "Unsupported GAN type: {}".format(self.gan_type)
         return loss
+
 
 ##################################################################################
 # Generator
@@ -90,20 +123,29 @@ class AdaINGen(nn.Module):
     # AdaIN auto-encoder architecture
     def __init__(self, input_dim, params):
         super(AdaINGen, self).__init__()
-        dim = params['dim']
-        style_dim = params['style_dim']
-        n_downsample = params['n_downsample']
-        n_res = params['n_res']
-        activ = params['activ']
-        pad_type = params['pad_type']
-        mlp_dim = params['mlp_dim']
+        dim = params['dim']                     #   最底层的维数，默认64
+        style_dim = params['style_dim']         #   风格码的维数，默认8
+        n_downsample = params['n_downsample']   #   内容编码器中下采样层的个数，默认2
+        n_res = params['n_res']                 #   内容编码器和解码器中残差块的个数，默认4
+        activ = params['activ']                 #   激活函数，默认relu
+        pad_type = params['pad_type']           #   默认反射
+        mlp_dim = params['mlp_dim']             #   MLP的维度，默认256
 
         # style encoder
-        self.enc_style = StyleEncoder(4, input_dim, dim, style_dim, norm='none', activ=activ, pad_type=pad_type)
+        self.enc_style = StyleEncoder(n_downsample=4,
+                                      input_dim=input_dim,
+                                      dim=dim,
+                                      style_dim=style_dim,
+                                      norm='none',
+                                      activ=activ,
+                                      pad_type=pad_type)
 
         # content encoder
         self.enc_content = ContentEncoder(n_downsample, n_res, input_dim, dim, 'in', activ, pad_type=pad_type)
-        self.dec = Decoder(n_downsample, n_res, self.enc_content.output_dim, input_dim, res_norm='adain', activ=activ, pad_type=pad_type)
+
+        # decoder
+        self.dec = Decoder(n_downsample, n_res, self.enc_content.output_dim, input_dim, res_norm='adain', activ=activ,
+                           pad_type=pad_type)
 
         # MLP to generate AdaIN parameters
         self.mlp = MLP(style_dim, self.get_num_adain_params(self.dec), mlp_dim, 3, norm='none', activ=activ)
@@ -123,7 +165,7 @@ class AdaINGen(nn.Module):
     def decode(self, content, style):
         # decode content and style codes to an image
         adain_params = self.mlp(style)
-        self.assign_adain_params(adain_params, self.dec)
+        self.assign_adain_params(adain_params, self.dec)    #   注意这句话！所以解码的时候实际上用了编码过程的结果
         images = self.dec(content)
         return images
 
@@ -132,18 +174,19 @@ class AdaINGen(nn.Module):
         for m in model.modules():
             if m.__class__.__name__ == "AdaptiveInstanceNorm2d":
                 mean = adain_params[:, :m.num_features]
-                std = adain_params[:, m.num_features:2*m.num_features]
+                std = adain_params[:, m.num_features:2 * m.num_features]
                 m.bias = mean.contiguous().view(-1)
                 m.weight = std.contiguous().view(-1)
-                if adain_params.size(1) > 2*m.num_features:
-                    adain_params = adain_params[:, 2*m.num_features:]
+                #   由于可能有多个adain层，所以这里把用掉的部分删除掉，看看后面还有没有……
+                if adain_params.size(1) > 2 * m.num_features:
+                    adain_params = adain_params[:, 2 * m.num_features:]
 
     def get_num_adain_params(self, model):
         # return the number of AdaIN parameters needed by the model
         num_adain_params = 0
         for m in model.modules():
             if m.__class__.__name__ == "AdaptiveInstanceNorm2d":
-                num_adain_params += 2*m.num_features
+                num_adain_params += 2 * m.num_features
         return num_adain_params
 
 
@@ -159,7 +202,8 @@ class VAEGen(nn.Module):
 
         # content encoder
         self.enc = ContentEncoder(n_downsample, n_res, input_dim, dim, 'in', activ, pad_type=pad_type)
-        self.dec = Decoder(n_downsample, n_res, self.enc.output_dim, input_dim, res_norm='in', activ=activ, pad_type=pad_type)
+        self.dec = Decoder(n_downsample, n_res, self.enc.output_dim, input_dim, res_norm='in', activ=activ,
+                           pad_type=pad_type)
 
     def forward(self, images):
         # This is a reduced VAE implementation where we assume the outputs are multivariate Gaussian distribution with mean = hiddens and std_dev = all ones.
@@ -186,16 +230,33 @@ class VAEGen(nn.Module):
 ##################################################################################
 
 class StyleEncoder(nn.Module):
+    '''
+        输入图像是3维的，dim按上面的调用，是64，
+        结构：
+            7x7的卷积头 @64
+            4x4的降采样卷积   @128
+            4x4的降采样卷积   @256
+                * 后面按n_downsample可能还有，不过默认没了。如果有的话，特征维度也不再增加了（确实，编码风格不需要太复杂）
+            global average pooling -> dim = 256
+            MLP @ style_dim = 8
+    '''
     def __init__(self, n_downsample, input_dim, dim, style_dim, norm, activ, pad_type):
         super(StyleEncoder, self).__init__()
         self.model = []
-        self.model += [Conv2dBlock(input_dim, dim, 7, 1, 3, norm=norm, activation=activ, pad_type=pad_type)]
+        self.model += [Conv2dBlock(input_dim=input_dim,
+                                   output_dim=dim,
+                                   kernel_size=7,
+                                   stride=1,
+                                   padding=3,
+                                   norm=norm,
+                                   activation=activ,
+                                   pad_type=pad_type)]
         for i in range(2):
             self.model += [Conv2dBlock(dim, 2 * dim, 4, 2, 1, norm=norm, activation=activ, pad_type=pad_type)]
             dim *= 2
         for i in range(n_downsample - 2):
             self.model += [Conv2dBlock(dim, dim, 4, 2, 1, norm=norm, activation=activ, pad_type=pad_type)]
-        self.model += [nn.AdaptiveAvgPool2d(1)] # global average pooling
+        self.model += [nn.AdaptiveAvgPool2d(1)]  # global average pooling
         self.model += [nn.Conv2d(dim, style_dim, 1, 1, 0)]
         self.model = nn.Sequential(*self.model)
         self.output_dim = dim
@@ -203,7 +264,19 @@ class StyleEncoder(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+
 class ContentEncoder(nn.Module):
+    '''
+        输入图像是3维的，dim按上面的调用，是64
+        残差块默认4个
+        一个残差块就是带Residual的两个Conv模块，而不是ResNet中那种复杂的东西，可见结构还是相对简单的
+        结构：
+            7x7的卷积头 @64
+            4x4的降采样卷积   @128
+            4x4的降采样卷积   @256
+            残差块x4          @256
+        因此输出是一个4倍降采样的，维度为256的东西
+    '''
     def __init__(self, n_downsample, n_res, input_dim, dim, norm, activ, pad_type):
         super(ContentEncoder, self).__init__()
         self.model = []
@@ -220,7 +293,11 @@ class ContentEncoder(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+
 class Decoder(nn.Module):
+    '''
+
+    '''
     def __init__(self, n_upsample, n_res, dim, output_dim, res_norm='adain', activ='relu', pad_type='zero'):
         super(Decoder, self).__init__()
 
@@ -239,6 +316,7 @@ class Decoder(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+
 ##################################################################################
 # Sequential Models
 ##################################################################################
@@ -253,19 +331,20 @@ class ResBlocks(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+
 class MLP(nn.Module):
     def __init__(self, input_dim, output_dim, dim, n_blk, norm='none', activ='relu'):
-
         super(MLP, self).__init__()
         self.model = []
         self.model += [LinearBlock(input_dim, dim, norm=norm, activation=activ)]
         for i in range(n_blk - 2):
             self.model += [LinearBlock(dim, dim, norm=norm, activation=activ)]
-        self.model += [LinearBlock(dim, output_dim, norm='none', activation='none')] # no output activations
+        self.model += [LinearBlock(dim, output_dim, norm='none', activation='none')]  # no output activations
         self.model = nn.Sequential(*self.model)
 
     def forward(self, x):
         return self.model(x.view(x.size(0), -1))
+
 
 ##################################################################################
 # Basic Blocks
@@ -275,8 +354,8 @@ class ResBlock(nn.Module):
         super(ResBlock, self).__init__()
 
         model = []
-        model += [Conv2dBlock(dim ,dim, 3, 1, 1, norm=norm, activation=activation, pad_type=pad_type)]
-        model += [Conv2dBlock(dim ,dim, 3, 1, 1, norm=norm, activation='none', pad_type=pad_type)]
+        model += [Conv2dBlock(dim, dim, 3, 1, 1, norm=norm, activation=activation, pad_type=pad_type)]
+        model += [Conv2dBlock(dim, dim, 3, 1, 1, norm=norm, activation='none', pad_type=pad_type)]
         self.model = nn.Sequential(*model)
 
     def forward(self, x):
@@ -285,8 +364,9 @@ class ResBlock(nn.Module):
         out += residual
         return out
 
+
 class Conv2dBlock(nn.Module):
-    def __init__(self, input_dim ,output_dim, kernel_size, stride,
+    def __init__(self, input_dim, output_dim, kernel_size, stride,
                  padding=0, norm='none', activation='relu', pad_type='zero'):
         super(Conv2dBlock, self).__init__()
         self.use_bias = True
@@ -305,7 +385,7 @@ class Conv2dBlock(nn.Module):
         if norm == 'bn':
             self.norm = nn.BatchNorm2d(norm_dim)
         elif norm == 'in':
-            #self.norm = nn.InstanceNorm2d(norm_dim, track_running_stats=True)
+            # self.norm = nn.InstanceNorm2d(norm_dim, track_running_stats=True)
             self.norm = nn.InstanceNorm2d(norm_dim)
         elif norm == 'ln':
             self.norm = LayerNorm(norm_dim)
@@ -345,6 +425,7 @@ class Conv2dBlock(nn.Module):
         if self.activation:
             x = self.activation(x)
         return x
+
 
 class LinearBlock(nn.Module):
     def __init__(self, input_dim, output_dim, norm='none', activation='relu'):
@@ -392,6 +473,7 @@ class LinearBlock(nn.Module):
         if self.activation:
             out = self.activation(out)
         return out
+
 
 ##################################################################################
 # VGG network definition
@@ -446,6 +528,7 @@ class Vgg16(nn.Module):
 
         return relu5_3
         # return [relu1_2, relu2_2, relu3_3, relu4_3]
+
 
 ##################################################################################
 # Normalization layers
@@ -511,6 +594,7 @@ class LayerNorm(nn.Module):
             x = x * self.gamma.view(*shape) + self.beta.view(*shape)
         return x
 
+
 def l2normalize(v, eps=1e-12):
     return v / (v.norm() + eps)
 
@@ -520,6 +604,7 @@ class SpectralNorm(nn.Module):
     Based on the paper "Spectral Normalization for Generative Adversarial Networks" by Takeru Miyato, Toshiki Kataoka, Masanori Koyama, Yuichi Yoshida
     and the Pytorch implementation https://github.com/christiancosgrove/pytorch-spectral-normalization-gan
     """
+
     def __init__(self, module, name='weight', power_iterations=1):
         super(SpectralNorm, self).__init__()
         self.module = module
@@ -535,8 +620,8 @@ class SpectralNorm(nn.Module):
 
         height = w.data.shape[0]
         for _ in range(self.power_iterations):
-            v.data = l2normalize(torch.mv(torch.t(w.view(height,-1).data), u.data))
-            u.data = l2normalize(torch.mv(w.view(height,-1).data, v.data))
+            v.data = l2normalize(torch.mv(torch.t(w.view(height, -1).data), u.data))
+            u.data = l2normalize(torch.mv(w.view(height, -1).data, v.data))
 
         # sigma = torch.dot(u.data, torch.mv(w.view(height,-1).data, v.data))
         sigma = u.dot(w.view(height, -1).mv(v))
@@ -550,7 +635,6 @@ class SpectralNorm(nn.Module):
             return True
         except AttributeError:
             return False
-
 
     def _make_params(self):
         w = getattr(self.module, self.name)
@@ -569,7 +653,6 @@ class SpectralNorm(nn.Module):
         self.module.register_parameter(self.name + "_u", u)
         self.module.register_parameter(self.name + "_v", v)
         self.module.register_parameter(self.name + "_bar", w_bar)
-
 
     def forward(self, *args):
         self._update_u_v()
